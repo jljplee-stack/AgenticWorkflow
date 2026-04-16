@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3상 차단기 단락 시험 시뮬레이터</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0b1020;
+      --panel: #161d34;
+      --text: #e8ecff;
+      --muted: #a8b1d1;
+      --line-a: #ff6b6b;
+      --line-b: #4ecdc4;
+      --line-c: #ffe66d;
+      --line-trv: #c792ea;
+      --accent: #7fdbff;
+    }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at 20% 10%, #1a2447 0%, var(--bg) 55%);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 16px 32px;
+      display: grid;
+      gap: 16px;
+    }
+    .panel {
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      border: 1px solid color-mix(in srgb, var(--muted) 20%, transparent);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.25);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    p { margin: 0 0 10px; color: var(--muted); }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); }
+    input {
+      width: 100%;
+      margin-top: 6px;
+      background: #0f152c;
+      color: var(--text);
+      border: 1px solid #364167;
+      border-radius: 8px;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    .trip {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .trip input[type="range"] { padding: 0; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .metric {
+      padding: 10px;
+      border-radius: 8px;
+      background: #0f152c;
+      border: 1px solid #313b5f;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric strong { display: block; margin-bottom: 4px; font-size: 0.82rem; color: var(--muted); }
+    canvas {
+      width: 100%;
+      height: 480px;
+      background: #090f23;
+      border-radius: 10px;
+      border: 1px solid #2d375a;
+      cursor: ew-resize;
+    }
+    .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; color: var(--muted); font-size: 0.83rem; }
+    .legend span::before { content: ""; display: inline-block; width: 14px; height: 2px; margin-right: 6px; vertical-align: middle; }
+    .a::before { background: var(--line-a); }
+    .b::before { background: var(--line-b); }
+    .c::before { background: var(--line-c); }
+    .trv::before { background: var(--line-trv); }
+    .trip-line::before { background: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="panel">
+      <h1>차단기 3상 단락 시험 시뮬레이터</h1>
+      <p>차단 시점을 슬라이더 또는 그래프 드래그로 이동하면 전류 차단과 TRV(과도회복전압) 파형이 즉시 갱신됩니다.</p>
+      <div class="controls">
+        <label>정격전압 (kV, 선간 RMS)
+          <input id="ratedVoltage" type="number" value="154" step="1" min="1" />
+        </label>
+        <label>정격전류 (kA RMS)
+          <input id="ratedCurrent" type="number" value="40" step="0.1" min="0.1" />
+        </label>
+        <label>주파수 (Hz)
+          <input id="frequency" type="number" value="60" step="1" min="1" />
+        </label>
+        <label>kpp (TRV peak factor)
+          <input id="kpp" type="number" value="2.0" step="0.1" min="0.1" />
+        </label>
+      </div>
+      <div class="trip" style="margin-top: 12px;">
+        <input id="tripTime" type="range" min="0" max="120" value="45" />
+        <div id="tripLabel">차단 시점: 45.0 ms</div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><strong>차단 직전 A상 전류</strong><span id="iaPre"></span></div>
+        <div class="metric"><strong>차단 직후 A상 전류</strong><span id="iaPost"></span></div>
+        <div class="metric"><strong>TRV 피크(상당)</strong><span id="trvPeak"></span></div>
+        <div class="metric"><strong>X/R 기반 감쇠 시정수 가정</strong><span id="tau"></span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <canvas id="plot" width="1140" height="480" aria-label="3상 전압 전류 TRV 파형"></canvas>
+      <div class="legend">
+        <span class="a">Va / Ia</span>
+        <span class="b">Vb / Ib</span>
+        <span class="c">Vc / Ic</span>
+        <span class="trv">TRV</span>
+        <span class="trip-line">차단 시점</span>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('plot');
+    const ctx = canvas.getContext('2d');
+
+    const controls = {
+      ratedVoltage: document.getElementById('ratedVoltage'),
+      ratedCurrent: document.getElementById('ratedCurrent'),
+      frequency: document.getElementById('frequency'),
+      kpp: document.getElementById('kpp'),
+      tripTime: document.getElementById('tripTime'),
+    };
+
+    const tripLabel = document.getElementById('tripLabel');
+    const iaPre = document.getElementById('iaPre');
+    const iaPost = document.getElementById('iaPost');
+    const trvPeak = document.getElementById('trvPeak');
+    const tauLabel = document.getElementById('tau');
+
+    const colors = {
+      a: '#ff6b6b', b: '#4ecdc4', c: '#ffe66d', trv: '#c792ea', grid: '#334063', text: '#a8b1d1', trip: '#7fdbff'
+    };
+
+    const T_MAX_MS = 120;
+    const samples = 2400;
+    let dragging = false;
+
+    function getParams() {
+      const vLL = Math.max(0.1, Number(controls.ratedVoltage.value)) * 1000; // V
+      const iRms = Math.max(0.01, Number(controls.ratedCurrent.value)) * 1000; // A
+      const f = Math.max(1, Number(controls.frequency.value));
+      const kpp = Math.max(0.1, Number(controls.kpp.value));
+      const tTripMs = Number(controls.tripTime.value);
+
+      const vPhaseRms = vLL / Math.sqrt(3);
+      const vPeak = vPhaseRms * Math.sqrt(2);
+      const iPeak = iRms * Math.sqrt(2);
+      const omega = 2 * Math.PI * f;
+
+      const xrAssumed = 15; // 대표값 가정
+      const tau = xrAssumed / omega; // L/R = X/(ωR)
+
+      return { vPeak, iPeak, omega, tTripMs, kpp, tau };
+    }
+
+    function draw() {
+      const { vPeak, iPeak, omega, tTripMs, kpp, tau } = getParams();
+      const tTrip = tTripMs / 1000;
+      const tMax = T_MAX_MS / 1000;
+      const dt = tMax / (samples - 1);
+
+      const va = [], vb = [], vc = [];
+      const ia = [], ib = [], ic = [];
+      const trv = [];
+
+      let yMax = 1;
+
+      for (let i = 0; i < samples; i++) {
+        const t = i * dt;
+        const a = vPeak * Math.sin(omega * t);
+        const b = vPeak * Math.sin(omega * t - (2 * Math.PI / 3));
+        const c = vPeak * Math.sin(omega * t + (2 * Math.PI / 3));
+
+        const iaRaw = iPeak * Math.sin(omega * t);
+        const ibRaw = iPeak * Math.sin(omega * t - (2 * Math.PI / 3));
+        const icRaw = iPeak * Math.sin(omega * t + (2 * Math.PI / 3));
+
+        const decay = t < tTrip ? 1 : Math.exp(-(t - tTrip) / tau);
+        const iaVal = iaRaw * decay;
+        const ibVal = ibRaw * decay;
+        const icVal = icRaw * decay;
+
+        const trvVal = t < tTrip
+          ? 0
+          : kpp * vPeak * (1 - Math.exp(-(t - tTrip) / (tau * 0.6))) * Math.sin(omega * (t - tTrip));
+
+        va.push(a); vb.push(b); vc.push(c);
+        ia.push(iaVal); ib.push(ibVal); ic.push(icVal);
+        trv.push(trvVal);
+
+        yMax = Math.max(yMax, Math.abs(a), Math.abs(b), Math.abs(c), Math.abs(iaVal), Math.abs(ibVal), Math.abs(icVal), Math.abs(trvVal));
+      }
+
+      const w = canvas.width;
+      const h = canvas.height;
+      const pad = { l: 55, r: 16, t: 18, b: 35 };
+      const pw = w - pad.l - pad.r;
+      const ph = h - pad.t - pad.b;
+
+      const x = (i) => pad.l + (i / (samples - 1)) * pw;
+      const y = (v) => pad.t + ph * (0.5 - 0.45 * (v / yMax));
+
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.strokeStyle = colors.grid;
+      ctx.lineWidth = 1;
+      for (let gy = 0; gy <= 8; gy++) {
+        const yy = pad.t + (gy / 8) * ph;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, yy);
+        ctx.lineTo(pad.l + pw, yy);
+        ctx.stroke();
+      }
+
+      for (let gx = 0; gx <= 12; gx++) {
+        const xx = pad.l + (gx / 12) * pw;
+        ctx.beginPath();
+        ctx.moveTo(xx, pad.t);
+        ctx.lineTo(xx, pad.t + ph);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = colors.text;
+      ctx.font = '12px sans-serif';
+      ctx.fillText('0 ms', pad.l, h - 12);
+      ctx.fillText(`${T_MAX_MS} ms`, w - 62, h - 12);
+      ctx.fillText('+', 8, pad.t + 14);
+      ctx.fillText('0', 10, pad.t + ph * 0.5 + 4);
+      ctx.fillText('-', 10, pad.t + ph - 6);
+
+      function plot(data, color, width = 1.6) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(x(0), y(data[0]));
+        for (let i = 1; i < samples; i++) ctx.lineTo(x(i), y(data[i]));
+        ctx.stroke();
+      }
+
+      plot(va, colors.a, 1.2);
+      plot(vb, colors.b, 1.2);
+      plot(vc, colors.c, 1.2);
+      plot(ia, colors.a, 2.1);
+      plot(ib, colors.b, 2.1);
+      plot(ic, colors.c, 2.1);
+      plot(trv, colors.trv, 2.0);
+
+      const tripX = pad.l + (tTripMs / T_MAX_MS) * pw;
+      ctx.strokeStyle = colors.trip;
+      ctx.setLineDash([7, 5]);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(tripX, pad.t);
+      ctx.lineTo(tripX, pad.t + ph);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const iTripIdx = Math.max(0, Math.min(samples - 2, Math.floor((tTrip / tMax) * (samples - 1))));
+      iaPre.textContent = `${(ia[iTripIdx] / 1000).toFixed(2)} kA`;
+      iaPost.textContent = `${(ia[iTripIdx + 1] / 1000).toFixed(2)} kA`;
+      trvPeak.textContent = `${(kpp * vPeak / 1000).toFixed(1)} kV(근사)`;
+      tauLabel.textContent = `${(tau * 1000).toFixed(1)} ms (X/R=15 가정)`;
+      tripLabel.textContent = `차단 시점: ${tTripMs.toFixed(1)} ms`;
+    }
+
+    function setTripFromMouse(clientX) {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(rect.left, Math.min(clientX, rect.right));
+      const ratio = (x - rect.left) / rect.width;
+      controls.tripTime.value = (ratio * T_MAX_MS).toFixed(2);
+      draw();
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      dragging = true;
+      setTripFromMouse(e.clientX);
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      setTripFromMouse(e.clientX);
+    });
+    window.addEventListener('mouseup', () => { dragging = false; });
+
+    Object.values(controls).forEach((el) => el.addEventListener('input', draw));
+    draw();
+  </script>
+</body>
+</html>
